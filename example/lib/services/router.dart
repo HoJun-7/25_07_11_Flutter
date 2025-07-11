@@ -100,12 +100,11 @@ GoRouter createRouter(String baseUrl) {
           GoRoute(
             path: '/result',
             builder: (context, state) {
-              final data = state.extra as Map<String, dynamic>;
+              final extra = state.extra as Map<String, dynamic>;
               return ResultScreen(
-                originalUrl: data['originalUrl'],
-                diseaseMaskUrl: data['diseaseMaskUrl'],
-                hygieneMaskUrl: data['hygieneMaskUrl'],
-                toothNumberMaskUrl: data['toothNumberMaskUrl'],
+                baseUrl: extra['baseUrl'],
+                imageUrl: extra['imageUrl'],
+                inferenceData: extra['inferenceData'],
               );
             },
           ),

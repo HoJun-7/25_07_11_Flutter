@@ -83,42 +83,36 @@ class _UploadScreenState extends State<UploadScreen> {
     });
 
     try {
-      final uri = Uri.parse("${widget.baseUrl}/predict");
+      final uri = Uri.parse("${widget.baseUrl}/upload_image");
       final request = http.MultipartRequest('POST', uri);
 
-      print("📁 선택된 이미지 경로: ${_selectedImage!.path}");
-      request.files.add(await http.MultipartFile.fromPath('file', _selectedImage!.path));
+      // ✅ 필드 이름을 'image'로 수정
+      request.files.add(await http.MultipartFile.fromPath('image', _selectedImage!.path));
+
+      // ✅ user_id도 같이 전송
+      request.fields['user_id'] = widget.userId;
 
       final response = await request.send();
-      print("⏳ 서버 응답 대기 중...");
       final resBody = await response.stream.bytesToString();
-
       print("📥 서버 응답 수신 완료: $resBody");
 
       final decoded = json.decode(resBody);
 
-      final originalUrl = decoded['original_url'];
-      final masks = decoded['masks'] ?? {};
+      final imageUrl = decoded['image_url'];
+      final inferenceData = decoded['inference_data'];
 
-      final diseaseMaskUrl = masks['disease_model'];
-      final hygieneMaskUrl = masks['hygiene_model'];
-      final toothNumberMaskUrl = masks['tooth_number_model'];
+      print("🖼 추론 이미지 URL: $imageUrl");
+      print("📊 추론 데이터: $inferenceData");
 
-      print("🖼 originalUrl: $originalUrl");
-      print("🧪 diseaseMaskUrl: $diseaseMaskUrl");
-      print("🧪 hygieneMaskUrl: $hygieneMaskUrl");
-      print("🧪 toothNumberMaskUrl: $toothNumberMaskUrl");
-
-      if ([originalUrl, diseaseMaskUrl, hygieneMaskUrl, toothNumberMaskUrl].contains(null)) {
-        throw Exception("서버 응답 오류: 하나 이상의 이미지 URL이 없습니다.");
+      if (imageUrl == null || inferenceData == null) {
+        throw Exception("서버 응답 오류: 이미지 URL 또는 추론 데이터 없음");
       }
 
-      print("✅ 진단 결과 페이지로 이동");
+      // ✅ 결과 페이지로 이동
       context.push('/result', extra: {
-        'originalUrl': originalUrl,
-        'diseaseMaskUrl': diseaseMaskUrl,
-        'hygieneMaskUrl': hygieneMaskUrl,
-        'toothNumberMaskUrl': toothNumberMaskUrl,
+        'imageUrl': imageUrl,
+        'inferenceData': inferenceData,
+        'baseUrl': widget.baseUrl, // ✅ 이거 추가!
       });
     } catch (e) {
       print("❌ 진단 요청 중 에러 발생: $e");
@@ -132,6 +126,7 @@ class _UploadScreenState extends State<UploadScreen> {
       print("🔁 로딩 상태 종료");
     }
   }
+
 
   @override
   Widget build(BuildContext context) {

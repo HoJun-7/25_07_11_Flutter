@@ -3,6 +3,8 @@ import 'package:ultralytics_yolo/yolo.dart';
 import 'package:ultralytics_yolo/yolo_result.dart';
 import 'package:ultralytics_yolo/yolo_view.dart';
 import 'package:ultralytics_yolo/ultralytics_yolo.dart'; // YOLO 관련 클래스를 위해 추가
+import 'package:image_gallery_saver/image_gallery_saver.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '/models/model_type.dart';
 import '/models/slider_type.dart';
 import '/services/model_manager.dart';
@@ -23,7 +25,7 @@ const int _kAlpha30Percent = 76; // 0.3 * 255 (for inactive track color)
 int _captureIndex = 1;
 DateTime? _lastCaptureDate;
 
-List<YOLOResult> _latestResults = []; //추론 결과를 저장할 변수 선언
+//List<YOLOResult> _latestResults = []; //추론 결과를 저장할 변수 선언
 
 class CameraInferenceScreen extends StatefulWidget {
   final String userId;
@@ -174,19 +176,66 @@ Future<void> _captureAndSendToServer() async {
       throw Exception('YOLO 컨트롤러가 초기화되지 않았습니다.');
     }
 
+    // ✅ YOLOView를 일시적으로 비활성화
+    final viewKey = _yoloViewKey.currentState;
+    viewKey?.setVisibility(false);
+
     setState(() {
       _isModelLoading = true;
       _loadingMessage = '원본 이미지 캡처 중...';
     });
 
-    final Uint8List? imageData = await _yoloController.captureFrame();
-    debugPrint('🟢 캡처 결과: ${imageData != null ? "성공" : "실패"}');
+
+    Uint8List? imageData;
+    const maxWait = Duration(seconds: 1);
+    final start = DateTime.now();
+
+    while (imageData == null && DateTime.now().difference(start) < maxWait) {
+      imageData = await _yoloController.captureRawFrame();
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+
+
+    // ✅ 다시 YOLOView 활성화
+    viewKey?.setVisibility(true);
 
     if (imageData == null) {
       throw Exception('이미지 캡처에 실패했습니다.');
     }
 
-    // 파일명 생성
+    // ✅ Android 13+ 및 Android 15 대응 권한 요청
+    if (Platform.isAndroid) {
+      var status = await Permission.photos.request(); // Android 13+ 에서는 READ_MEDIA_IMAGES 권한에 해당
+      if (!status.isGranted) {
+        throw Exception('사진 저장 권한이 필요합니다.');
+      }
+    }
+
+    // ✅ 갤러리에 저장
+    final galleryFilename = 'YOLO_${DateTime.now().toIso8601String().replaceAll(':', '_')}.png';
+    final result = await ImageGallerySaver.saveImage(
+      imageData,
+      name: galleryFilename.split('.').first,
+      quality: 100,
+    );
+
+    if (result['isSuccess'] == true) {
+      debugPrint('✅ 갤러리에 저장 성공: $result');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('📷 사진이 갤러리에 저장되었습니다')),
+        );
+      }
+    } else {
+      debugPrint('❌ 갤러리 저장 실패: $result');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('갤러리 저장 실패')),
+        );
+      }
+    }
+
+    //서버 전송 활성화 시작 ---------------------------
     final now = DateTime.now();
     final formattedDate = "${now.year.toString().padLeft(4, '0')}"
         "${now.month.toString().padLeft(2, '0')}"
@@ -197,17 +246,15 @@ Future<void> _captureAndSendToServer() async {
 
     final filename = "${widget.userId}_${formattedDate}.png";
 
-    // ✅ 추론 결과 JSON 직렬화
     final String jsonResults = jsonEncode(_serializeYOLOResults(_latestResults));
+    //final String serverUrl = '${widget.baseUrl}/upload_result_with_image';
+    final String serverUrl = '${widget.baseUrl}/upload_image';
+    //final String serverUrl = '${widget.baseUrl}/upload_masked_image';
 
-    // ✅ 서버 URL
-    final String serverUrl = '${widget.baseUrl}/upload_result_with_image';
-
-    // ✅ MultipartRequest 구성
     final request = http.MultipartRequest('POST', Uri.parse(serverUrl))
       ..fields['user_id'] = widget.userId
       ..fields['filename'] = filename
-      ..fields['results'] = jsonResults // ✅ 여기!
+      ..fields['results'] = jsonResults
       ..files.add(http.MultipartFile.fromBytes(
         'file',
         imageData,
@@ -232,6 +279,8 @@ Future<void> _captureAndSendToServer() async {
         );
       }
     }
+    //서버 전송 활성화 끝 ---------------------------
+
   } catch (e) {
     debugPrint('❌ 오류 발생: $e');
     if (mounted) {
@@ -247,6 +296,7 @@ Future<void> _captureAndSendToServer() async {
     });
   }
 }
+
 
 
   /// 새로운 캡쳐 버튼 위젯을 빌드합니다.
@@ -269,9 +319,8 @@ Future<void> _captureAndSendToServer() async {
           // YOLO View: 맨 뒤에 위치해야 함
           if (_modelPath != null && !_isModelLoading) // _modelPath가 null이 아니고 로딩 중이 아닐 때만 표시
             YOLOView(
-              key: _useController
-                  ? const ValueKey('yolo_view_static')
-                  : _yoloViewKey,
+              // ⚠️ 수정된 부분: _useController 조건 없이 _yoloViewKey를 사용
+              key: _yoloViewKey,
               controller: _useController ? _yoloController : null,
               modelPath: _modelPath!, // _modelPath 사용
               task: _selectedModel.task,
@@ -762,8 +811,8 @@ Future<void> _captureAndSendToServer() async {
 
   /// ModelType에 따라 모델 파일 이름을 반환합니다.
   ///
-  /// 현재는 `ModelType.segment`에 대해서만 특정 파일 이름을 반환하고
-  /// 다른 모든 모델 타입은 기본값으로 `pill_best_float16.tflite`를 반환합니다.
+  /// 현재는 ModelType.segment에 대해서만 특정 파일 이름을 반환하고
+  /// 다른 모든 모델 타입은 기본값으로 pill_best_float16.tflite를 반환합니다.
   String _getModelFileName(ModelType modelType) {
     switch (modelType) {
       case ModelType.detect:
@@ -783,8 +832,8 @@ Future<void> _captureAndSendToServer() async {
 
   /// 플랫폼에 맞는 모델을 로드합니다.
   ///
-  /// `_selectedModel`에 따라 해당 모델 파일을 `assets/models`에서 로드하고,
-  /// 이를 애플리케이션 문서 디렉토리에 복사한 후, `_modelPath`에 설정합니다.
+  /// _selectedModel에 따라 해당 모델 파일을 assets/models에서 로드하고,
+  /// 이를 애플리케이션 문서 디렉토리에 복사한 후, _modelPath에 설정합니다.
   /// 모델 로딩 중 상태를 업데이트하여 사용자에게 진행 상황을 보여줍니다.
   Future<void> _loadModelForPlatform() async {
     setState(() {
